@@ -1,15 +1,18 @@
-
 package com.thaiguer.mercado
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import kotlinx.coroutines.launch
 import com.thaiguer.mercado.core.MercadoItem
 
 @Composable
@@ -37,6 +40,7 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .imePadding()
             .padding(horizontal = 16.dp)
             .padding(top = 20.dp)
     ) {
@@ -92,6 +96,12 @@ fun HomeScreen(
                 var priceText by remember(item.id) {
                     mutableStateOf(item.price.toString())
                 }
+
+                val bringIntoViewRequester = remember {
+                    BringIntoViewRequester()
+                }
+
+                val scope = rememberCoroutineScope()
 
                 Card(
                     modifier = Modifier.fillMaxWidth()
@@ -170,7 +180,19 @@ fun HomeScreen(
                             keyboardOptions = KeyboardOptions(
                                 keyboardType = KeyboardType.Decimal
                             ),
-                            modifier = Modifier.width(160.dp)
+                            modifier = Modifier
+                                .width(160.dp)
+                                .bringIntoViewRequester(
+                                    bringIntoViewRequester
+                                )
+                                .onFocusChanged { focusState ->
+                                    if (focusState.isFocused) {
+                                        scope.launch {
+                                            bringIntoViewRequester
+                                                .bringIntoView()
+                                        }
+                                    }
+                                }
                         )
 
                         Row(
