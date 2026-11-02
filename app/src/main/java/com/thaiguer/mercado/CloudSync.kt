@@ -1,5 +1,6 @@
 package com.thaiguer.mercado
 
+import android.util.Base64
 import com.thaiguer.mercado.core.MercadoItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -7,11 +8,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 data class CloudConfig(
-    val apiUrl: String,
-    val binId: String,
-    val accessKey: String
+    val repositoryUrl: String,
+    val token: String,
+    val branch: String = "main",
+    val filePath: String = "data/mercado.json"
 )
 
 data class SyncSnapshot(
@@ -19,75 +22,178 @@ data class SyncSnapshot(
     val deleted: Map<String, Long> = emptyMap()
 )
 
+data class RemoteSnapshot(
+    val snapshot: SyncSnapshot,
+    val sha: String?
+)
+
 object CloudSync {
 
-    private fun endpoint(
-        config: CloudConfig,
-        latest: Boolean
-    ): URL {
-        require(config.apiUrl.startsWith("https://")) {
-            "API URL must start with https://"
-        }
+    private data class GitHubFile(
+        val content: JSONObject,
+        val sha: String?
+    )
 
-        require(config.binId.isNotBlank()) {
-            "Bin ID is empty."
-        }
+    private data class Repository(
+        val owner: String,
+        val name: String
+    )
 
-        val base = config.apiUrl.trim().trimEnd('/')
-        val suffix = if (latest) "/latest" else ""
+    private fun repository(config: CloudConfig): Repository {
 
-        return URL("$base/b/${config.binId.trim()}$suffix")
+        val url = config.repositoryUrl
+            .trim()
+            .trimEnd('/')
+
+        val regex = Regex(
+            """^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$"""
+        )
+
+        val match = regex.matchEntire(url)
+            ?: throw IllegalArgumentException(
+                "Invalid GitHub repository URL."
+            )
+
+        return Repository(
+            owner = match.groupValues[1],
+            name = match.groupValues[2]
+        )
     }
 
-    suspend fun download(
-        config: CloudConfig
-    ): SyncSnapshot {
-        return withContext(Dispatchers.IO) {
+    private fun endpoint(config: CloudConfig): URL {
 
-            require(config.accessKey.isNotBlank()) {
-                "Access Key is empty."
+        require(config.token.isNotBlank()) {
+            "GitHub token is empty."
+        }
+
+        require(config.branch.isNotBlank()) {
+            "Branch is empty."
+        }
+
+        require(config.filePath.isNotBlank()) {
+            "File path is empty."
+        }
+
+        val repo = repository(config)
+
+        val encodedPath = config.filePath
+            .trim('/')
+            .split("/")
+            .joinToString("/") {
+                URLEncoder.encode(it, "UTF-8")
+                    .replace("+", "%20")
             }
 
-            val connection =
-                endpoint(config, true)
-                    .openConnection() as HttpURLConnection
+        val branch = URLEncoder.encode(
+            config.branch.trim(),
+            "UTF-8"
+        )
+
+        return URL(
+            "https://api.github.com/repos/" +
+                    "${repo.owner}/${repo.name}/contents/" +
+                    "$encodedPath?ref=$branch"
+        )
+    }
+
+    private fun configureConnection(
+        connection: HttpURLConnection,
+        config: CloudConfig
+    ) {
+
+        connection.setRequestProperty(
+            "Authorization",
+            "Bearer ${config.token}"
+        )
+
+        connection.setRequestProperty(
+            "Accept",
+            "application/vnd.github+json"
+        )
+
+        connection.setRequestProperty(
+            "X-GitHub-Api-Version",
+            "2022-11-28"
+        )
+
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+    }
+
+    private fun readResponse(
+        connection: HttpURLConnection
+    ): String {
+
+        val status = connection.responseCode
+
+        val stream = if (status in 200..299) {
+            connection.inputStream
+        } else {
+            connection.errorStream
+        }
+
+        val response = stream
+            ?.bufferedReader()
+            ?.use { it.readText() }
+            ?: ""
+
+        if (status !in 200..299) {
+            throw Exception(
+                "GitHub request failed: HTTP $status. $response"
+            )
+        }
+
+        return response
+    }
+
+    private suspend fun downloadGitHubFile(
+        config: CloudConfig
+    ): GitHubFile? {
+
+        return withContext(Dispatchers.IO) {
+
+            val connection = endpoint(config)
+                .openConnection() as HttpURLConnection
 
             try {
+
                 connection.requestMethod = "GET"
 
-                connection.setRequestProperty(
-                    "X-Access-Key",
-                    config.accessKey
+                configureConnection(
+                    connection,
+                    config
                 )
-
-                connection.setRequestProperty(
-                    "X-Bin-Meta",
-                    "false"
-                )
-
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
 
                 val status = connection.responseCode
 
-                val stream = if (status in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
+                if (status == 404) {
+                    return@withContext null
                 }
 
-                val response = stream
-                    ?.bufferedReader()
-                    ?.use { it.readText() }
-                    ?: ""
+                val response = readResponse(connection)
 
-                if (status !in 200..299) {
-                    throw Exception(
-                        "Download failed: HTTP $status. $response"
-                    )
-                }
+                val json = JSONObject(response)
 
-                parseSnapshot(JSONObject(response))
+                val encodedContent = json
+                    .optString("content")
+                    .replace("\n", "")
+                    .replace("\r", "")
+
+                val decodedBytes = Base64.decode(
+                    encodedContent,
+                    Base64.DEFAULT
+                )
+
+                val decodedText = String(
+                    decodedBytes,
+                    Charsets.UTF_8
+                )
+
+                GitHubFile(
+                    content = JSONObject(decodedText),
+                    sha = json.optString("sha")
+                        .takeIf { it.isNotBlank() }
+                )
 
             } finally {
                 connection.disconnect()
@@ -95,52 +201,91 @@ object CloudSync {
         }
     }
 
+    suspend fun downloadWithMetadata(
+        config: CloudConfig
+    ): RemoteSnapshot {
+
+        val file = downloadGitHubFile(config)
+
+        return if (file == null) {
+
+            RemoteSnapshot(
+                snapshot = SyncSnapshot(),
+                sha = null
+            )
+
+        } else {
+
+            RemoteSnapshot(
+                snapshot = parseSnapshot(file.content),
+                sha = file.sha
+            )
+        }
+    }
+
+    suspend fun download(
+        config: CloudConfig
+    ): SyncSnapshot {
+
+        return downloadWithMetadata(config).snapshot
+    }
+
     suspend fun upload(
         snapshot: SyncSnapshot,
-        config: CloudConfig
+        config: CloudConfig,
+        existingSha: String?
     ) {
+
         withContext(Dispatchers.IO) {
 
-            require(config.accessKey.isNotBlank()) {
-                "Access Key is empty."
+            val json = snapshotToJson(snapshot)
+
+            val content = Base64.encodeToString(
+                json.toString(2).toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+
+            val body = JSONObject().apply {
+
+                put(
+                    "message",
+                    "Update Mercado shopping list"
+                )
+
+                put("content", content)
+
+                put("branch", config.branch)
+
+                existingSha?.let {
+                    put("sha", it)
+                }
             }
 
-            val connection =
-                endpoint(config, false)
-                    .openConnection() as HttpURLConnection
+            val connection = endpoint(config)
+                .openConnection() as HttpURLConnection
 
             try {
+
                 connection.requestMethod = "PUT"
                 connection.doOutput = true
 
+                configureConnection(
+                    connection,
+                    config
+                )
+
                 connection.setRequestProperty(
                     "Content-Type",
-                    "application/json"
+                    "application/json; charset=utf-8"
                 )
 
-                connection.setRequestProperty(
-                    "X-Access-Key",
-                    config.accessKey
-                )
+                connection.outputStream
+                    .bufferedWriter(Charsets.UTF_8)
+                    .use {
+                        it.write(body.toString())
+                    }
 
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
-
-                connection.outputStream.bufferedWriter().use {
-                    it.write(snapshotToJson(snapshot).toString())
-                }
-
-                val status = connection.responseCode
-
-                if (status !in 200..299) {
-                    val error = connection.errorStream
-                        ?.bufferedReader()
-                        ?.use { it.readText() }
-
-                    throw Exception(
-                        "Upload failed: HTTP $status. $error"
-                    )
-                }
+                readResponse(connection)
 
             } finally {
                 connection.disconnect()
@@ -162,6 +307,7 @@ object CloudSync {
         val entries = mutableMapOf<String, Entry>()
 
         fun addItem(item: MercadoItem) {
+
             val candidate = Entry(
                 item = item,
                 timestamp = item.modifiedAt,
@@ -182,6 +328,7 @@ object CloudSync {
             id: String,
             timestamp: Long
         ) {
+
             val candidate = Entry(
                 item = null,
                 timestamp = timestamp,
@@ -288,7 +435,10 @@ object CloudSync {
                     ok = obj.optBoolean("ok", false),
                     count = obj.optInt("count", 1),
                     price = obj.optDouble("price", 0.0),
-                    modifiedAt = obj.optLong("modifiedAt", 0L)
+                    modifiedAt = obj.optLong(
+                        "modifiedAt",
+                        0L
+                    )
                 )
             )
         }

@@ -10,12 +10,15 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffo
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.thaiguer.mercado.core.MercadoItem
 import com.thaiguer.mercado.ui.theme.MercadoTheme
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -163,6 +166,8 @@ fun MercadoApp() {
         loadSnapshot(context)
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     var currentDestination by rememberSaveable {
         mutableStateOf(AppDestinations.HOME)
     }
@@ -175,46 +180,94 @@ fun MercadoApp() {
         mutableStateOf(initialSnapshot.deleted)
     }
 
-    var apiUrl by remember {
+    // GitHub repository settings.
+
+    var repositoryUrl by remember {
         mutableStateOf(
             preferences.getString(
-                "api_url",
-                "https://api.jsonbin.io/v3"
-            ) ?: "https://api.jsonbin.io/v3"
-        )
-    }
-
-    var binId by remember {
-        mutableStateOf(
-            preferences.getString("bin_id", "") ?: ""
-        )
-    }
-
-    var accessKey by remember {
-        mutableStateOf(
-            preferences.getString(
-                "jsonbin_access_key",
+                "github_repository_url",
                 ""
             ) ?: ""
         )
     }
 
+    var githubToken by remember {
+        mutableStateOf(
+            preferences.getString(
+                "github_token",
+                ""
+            ) ?: ""
+        )
+    }
+
+    var githubBranch by remember {
+        mutableStateOf(
+            preferences.getString(
+                "github_branch",
+                "main"
+            ) ?: "main"
+        )
+    }
+
+    var githubFilePath by remember {
+        mutableStateOf(
+            preferences.getString(
+                "github_file_path",
+                "data/mercado.json"
+            ) ?: "data/mercado.json"
+        )
+    }
+
     var syncEnabled by remember {
         mutableStateOf(
-            preferences.getBoolean("sync_enabled", false)
+            preferences.getBoolean(
+                "sync_enabled",
+                false
+            )
         )
     }
 
     var syncMessage by remember {
-        mutableStateOf("Cloud sync is disabled.")
+        mutableStateOf(
+            "GitHub sync is disabled."
+        )
     }
 
     var syncBusy by remember {
         mutableStateOf(false)
     }
 
+    // Synchronization control.
+
+    var syncPending by remember {
+        mutableStateOf(false)
+    }
+
+    var lastSyncAttemptAt by remember {
+        mutableLongStateOf(0L)
+    }
+
+    var retryAttempt by remember {
+        mutableIntStateOf(0)
+    }
+
+    var retryJob by remember {
+        mutableStateOf<Job?>(null)
+    }
+
+    var initialListObserved by remember {
+        mutableStateOf(false)
+    }
+
+    var suppressNextDebounce by remember {
+        mutableStateOf(false)
+    }
+
     val scope = rememberCoroutineScope()
-    val syncMutex = remember { Mutex() }
+
+    val syncMutex = remember {
+        Mutex()
+    }
 
     // Save shopping list locally.
 
@@ -222,156 +275,366 @@ fun MercadoApp() {
 
         saveSnapshot(
             context,
-            SyncSnapshot(items, deleted)
+            SyncSnapshot(
+                items = items,
+                deleted = deleted
+            )
         )
     }
 
-    // Save cloud synchronization preference.
+    // Save GitHub settings locally.
+
+    LaunchedEffect(
+        repositoryUrl,
+        githubToken,
+        githubBranch,
+        githubFilePath
+    ) {
+
+        preferences.edit()
+            .putString(
+                "github_repository_url",
+                repositoryUrl
+            )
+            .putString(
+                "github_token",
+                githubToken
+            )
+            .putString(
+                "github_branch",
+                githubBranch
+            )
+            .putString(
+                "github_file_path",
+                githubFilePath
+            )
+            .apply()
+    }
+
+    // Save synchronization preference.
 
     LaunchedEffect(syncEnabled) {
 
         preferences.edit()
-            .putBoolean("sync_enabled", syncEnabled)
+            .putBoolean(
+                "sync_enabled",
+                syncEnabled
+            )
             .apply()
 
         if (!syncEnabled) {
+
             syncMessage =
-                "Cloud sync is disabled. Your list is saved locally."
+                "GitHub sync is disabled. Your list is saved locally."
         }
     }
 
-    // Save API settings whenever they change.
-
-    LaunchedEffect(apiUrl, binId, accessKey) {
-
-        preferences.edit()
-            .putString("api_url", apiUrl)
-            .putString("bin_id", binId)
-            .putString("jsonbin_access_key", accessKey)
-            .apply()
-    }
+    // Save GitHub configuration.
 
     fun saveCloudConfig(
-        newApiUrl: String,
-        newBinId: String,
-        newAccessKey: String
+        newRepositoryUrl: String,
+        newToken: String,
+        newBranch: String,
+        newFilePath: String
     ) {
-        apiUrl = newApiUrl.trim()
-        binId = newBinId.trim()
-        accessKey = newAccessKey.trim()
 
-        syncMessage = "Cloud settings saved."
+        repositoryUrl = newRepositoryUrl.trim()
+
+        githubToken = newToken.trim()
+
+        githubBranch = newBranch.trim()
+
+        githubFilePath = newFilePath
+            .trim()
+            .trim('/')
+
+        syncMessage = "GitHub settings saved."
     }
 
     // Synchronization function.
 
-    fun syncNow() {
+    fun requestSync(
+        force: Boolean = false,
+        checkResumeInterval: Boolean = false
+    ) {
 
         if (!syncEnabled) return
 
         if (
-            apiUrl.isBlank() ||
-            binId.isBlank() ||
-            accessKey.isBlank()
+            repositoryUrl.isBlank() ||
+            githubToken.isBlank() ||
+            githubBranch.isBlank() ||
+            githubFilePath.isBlank()
         ) {
+
             syncMessage =
-                "Enter the API URL, Bin ID and Access Key first."
+                "Enter the GitHub repository URL, token, branch and file path."
+
+            return
+        }
+
+        val now = System.currentTimeMillis()
+
+        // Avoid unnecessary synchronization when returning
+        // to the app too frequently.
+
+        if (checkResumeInterval) {
+
+            if (lastSyncAttemptAt == 0L) {
+                return
+            }
+
+            if (now - lastSyncAttemptAt < 60_000L) {
+                return
+            }
+        }
+
+        if (force) {
+
+            retryJob?.cancel()
+            retryJob = null
+
+            retryAttempt = 0
+        }
+
+        // Prevent simultaneous synchronization.
+
+        if (!syncMutex.tryLock()) {
+
+            syncPending = true
+
             return
         }
 
         scope.launch {
 
-            syncMutex.withLock {
+            try {
 
                 syncBusy = true
-                syncMessage = "Synchronizing..."
+
+                syncPending = false
+
+                lastSyncAttemptAt =
+                    System.currentTimeMillis()
+
+                syncMessage = "Synchronizing with GitHub..."
 
                 try {
 
                     val config = CloudConfig(
-                        apiUrl = apiUrl,
-                        binId = binId,
-                        accessKey = accessKey
+                        repositoryUrl = repositoryUrl,
+                        token = githubToken,
+                        branch = githubBranch,
+                        filePath = githubFilePath
                     )
 
-                    // Download remote list.
+                    // Download remote data and SHA.
 
-                    val remote = CloudSync.download(config)
+                    val remote = CloudSync.downloadWithMetadata(
+                        config
+                    )
 
-                    // Merge local and remote data.
+                    // Capture the latest local data.
 
                     val local = SyncSnapshot(
                         items = items,
                         deleted = deleted
                     )
 
+                    // Merge local and remote data.
+
                     val merged = CloudSync.merge(
                         local,
-                        remote
+                        remote.snapshot
                     )
 
-                    // Update local state.
+                    // Update local state only when necessary.
 
-                    items = merged.items
-                    deleted = merged.deleted
+                    if (merged != local) {
 
-                    // Upload only if necessary.
+                        suppressNextDebounce = true
 
-                    if (merged != remote) {
-                        CloudSync.upload(merged, config)
+                        items = merged.items
+                        deleted = merged.deleted
+                    }
+
+                    // Upload only if remote data is different.
+
+                    if (merged != remote.snapshot) {
+
+                        CloudSync.upload(
+                            snapshot = merged,
+                            config = config,
+                            existingSha = remote.sha
+                        )
                     }
 
                     syncMessage =
-                        "Cloud synchronized successfully."
+                        "GitHub synchronized successfully."
+
+                    // Reset retry counter after success.
+
+                    retryAttempt = 0
+
+                    retryJob?.cancel()
+                    retryJob = null
 
                 } catch (e: Exception) {
 
                     syncMessage =
-                        "Cloud sync failed: ${e.message ?: "Unknown error"}. " +
+                        "GitHub sync failed: " +
+                                "${e.message ?: "Unknown error"}. " +
                                 "Your local list is still available."
 
-                } finally {
+                    // Progressive retry intervals.
 
-                    syncBusy = false
+                    val retryDelays = listOf(
+                        5L,
+                        15L,
+                        30L,
+                        60L,
+                        120L
+                    )
+
+                    val index = minOf(
+                        retryAttempt,
+                        retryDelays.lastIndex
+                    )
+
+                    val delaySeconds = retryDelays[index]
+
+                    retryAttempt++
+
+                    retryJob?.cancel()
+
+                    retryJob = scope.launch {
+
+                        delay(delaySeconds * 1000L)
+
+                        if (syncEnabled) {
+                            requestSync()
+                        }
+                    }
+
+                }
+
+            } finally {
+
+                syncBusy = false
+
+                syncMutex.unlock()
+
+                // Process requests that arrived while
+                // another synchronization was running.
+
+                if (syncPending && syncEnabled) {
+
+                    syncPending = false
+
+                    requestSync()
                 }
             }
         }
     }
 
-    // Sync when enabled or when connection settings change.
+    // Synchronize when settings change or sync is enabled.
 
     LaunchedEffect(
         syncEnabled,
-        apiUrl,
-        binId,
-        accessKey
+        repositoryUrl,
+        githubToken,
+        githubBranch,
+        githubFilePath
     ) {
+
         if (
             syncEnabled &&
-            apiUrl.isNotBlank() &&
-            binId.isNotBlank() &&
-            accessKey.isNotBlank()
+            repositoryUrl.isNotBlank() &&
+            githubToken.isNotBlank() &&
+            githubBranch.isNotBlank() &&
+            githubFilePath.isNotBlank()
         ) {
-            syncNow()
+
+            requestSync(force = true)
         }
     }
 
-    // Wait five seconds after list changes before synchronizing.
+    // Cancel retry attempts when synchronization is disabled.
+
+    LaunchedEffect(syncEnabled) {
+
+        if (!syncEnabled) {
+
+            retryJob?.cancel()
+            retryJob = null
+
+            syncMessage =
+                "GitHub sync is disabled. Your list is saved locally."
+        }
+    }
+
+    // Debounce: wait five seconds after list changes.
 
     LaunchedEffect(items, deleted) {
 
+        // Ignore the initial list composition.
+
+        if (!initialListObserved) {
+
+            initialListObserved = true
+
+            return@LaunchedEffect
+        }
+
+        // Ignore changes applied from GitHub.
+
+        if (suppressNextDebounce) {
+
+            suppressNextDebounce = false
+
+            return@LaunchedEffect
+        }
+
         if (syncEnabled) {
+
             delay(5000)
-            syncNow()
+
+            requestSync()
+        }
+    }
+
+    // Synchronize when returning to the foreground.
+    // Only if at least one minute has passed since
+    // the previous synchronization attempt.
+
+    DisposableEffect(lifecycleOwner) {
+
+        val observer = LifecycleEventObserver {
+                _, event ->
+
+            if (event == Lifecycle.Event.ON_RESUME) {
+
+                requestSync(
+                    checkResumeInterval = true
+                )
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
     NavigationSuiteScaffold(
+
         navigationSuiteItems = {
 
             AppDestinations.entries.forEach { destination ->
 
                 item(
+
                     icon = {
                         Text(destination.icon)
                     },
@@ -396,13 +659,17 @@ fun MercadoApp() {
             AppDestinations.HOME -> {
 
                 HomeScreen(
+
                     products = items,
 
                     onAdd = { item ->
 
                         items = items + item.copy(
+
                             id = UUID.randomUUID().toString(),
-                            modifiedAt = System.currentTimeMillis()
+
+                            modifiedAt =
+                                System.currentTimeMillis()
                         )
                     },
 
@@ -411,10 +678,14 @@ fun MercadoApp() {
                         items = items.map {
 
                             if (it.id == updated.id) {
+
                                 updated.copy(
-                                    modifiedAt = System.currentTimeMillis()
+                                    modifiedAt =
+                                        System.currentTimeMillis()
                                 )
+
                             } else {
+
                                 it
                             }
                         }
@@ -436,19 +707,25 @@ fun MercadoApp() {
             AppDestinations.MANAGE -> {
 
                 ManageScreen(
+
                     items = items,
 
                     onClearSelected = {
 
-                        val now = System.currentTimeMillis()
+                        val now =
+                            System.currentTimeMillis()
 
                         items = items.map { item ->
+
                             if (item.ok) {
+
                                 item.copy(
                                     ok = false,
                                     modifiedAt = now
                                 )
+
                             } else {
+
                                 item
                             }
                         }
@@ -456,9 +733,11 @@ fun MercadoApp() {
 
                     onClearQuantity = {
 
-                        val now = System.currentTimeMillis()
+                        val now =
+                            System.currentTimeMillis()
 
                         items = items.map {
+
                             it.copy(
                                 count = 0,
                                 modifiedAt = now
@@ -468,9 +747,11 @@ fun MercadoApp() {
 
                     onClearPrices = {
 
-                        val now = System.currentTimeMillis()
+                        val now =
+                            System.currentTimeMillis()
 
                         items = items.map {
+
                             it.copy(
                                 price = 0.0,
                                 modifiedAt = now
@@ -480,22 +761,42 @@ fun MercadoApp() {
 
                     onClearAll = {
 
-                        val now = System.currentTimeMillis()
+                        val now =
+                            System.currentTimeMillis()
 
                         deleted = deleted + items.associate {
+
                             it.id to now
                         }
 
                         items = emptyList()
                     },
 
-                    apiUrl = apiUrl,
-                    binId = binId,
-                    accessKey = accessKey,
+                    // GitHub configuration.
 
-                    onSaveCloudConfig = { url, id, key ->
-                        saveCloudConfig(url, id, key)
+                    repositoryUrl = repositoryUrl,
+
+                    token = githubToken,
+
+                    branch = githubBranch,
+
+                    filePath = githubFilePath,
+
+                    onSaveCloudConfig = {
+                            url,
+                            token,
+                            branch,
+                            filePath ->
+
+                        saveCloudConfig(
+                            url,
+                            token,
+                            branch,
+                            filePath
+                        )
                     },
+
+                    // Synchronization controls.
 
                     syncEnabled = syncEnabled,
 
@@ -504,10 +805,11 @@ fun MercadoApp() {
                     },
 
                     syncMessage = syncMessage,
+
                     syncBusy = syncBusy,
 
                     onSyncNow = {
-                        syncNow()
+                        requestSync(force = true)
                     }
                 )
             }

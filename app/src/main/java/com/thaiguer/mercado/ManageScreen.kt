@@ -21,10 +21,11 @@ fun ManageScreen(
     onClearPrices: () -> Unit,
     onClearAll: () -> Unit,
 
-    apiUrl: String,
-    binId: String,
-    accessKey: String,
-    onSaveCloudConfig: (String, String, String) -> Unit,
+    repositoryUrl: String,
+    token: String,
+    branch: String,
+    filePath: String,
+    onSaveCloudConfig: (String, String, String, String) -> Unit,
 
     syncEnabled: Boolean,
     onSyncEnabledChange: (Boolean) -> Unit,
@@ -32,17 +33,20 @@ fun ManageScreen(
     syncBusy: Boolean,
     onSyncNow: () -> Unit
 ) {
-
-    var urlInput by remember(apiUrl) {
-        mutableStateOf(apiUrl)
+    var urlInput by remember(repositoryUrl) {
+        mutableStateOf(repositoryUrl)
     }
 
-    var binInput by remember(binId) {
-        mutableStateOf(binId)
+    var tokenInput by remember(token) {
+        mutableStateOf(token)
     }
 
-    var keyInput by remember(accessKey) {
-        mutableStateOf(accessKey)
+    var branchInput by remember(branch) {
+        mutableStateOf(branch)
+    }
+
+    var filePathInput by remember(filePath) {
+        mutableStateOf(filePath)
     }
 
     var showDialog by remember {
@@ -64,10 +68,8 @@ fun ManageScreen(
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-
         Text(
             "Management",
             style = MaterialTheme.typography.headlineMedium
@@ -77,23 +79,17 @@ fun ManageScreen(
 
         HorizontalDivider()
 
-        // Cloud synchronization.
-
         Text(
-            "Cloud synchronization",
+            "GitHub synchronization",
             style = MaterialTheme.typography.titleMedium
         )
 
         OutlinedTextField(
             value = urlInput,
-            onValueChange = {
-                urlInput = it
-            },
-            label = {
-                Text("API URL")
-            },
+            onValueChange = { urlInput = it },
+            label = { Text("Repository URL") },
             placeholder = {
-                Text("https://api.jsonbin.io/v3")
+                Text("https://github.com/user/repository")
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
@@ -103,47 +99,49 @@ fun ManageScreen(
         )
 
         OutlinedTextField(
-            value = binInput,
-            onValueChange = {
-                binInput = it
-            },
-            label = {
-                Text("Bin ID")
-            },
+            value = tokenInput,
+            onValueChange = { tokenInput = it },
+            label = { Text("Personal Access Token") },
+            placeholder = { Text("Paste your GitHub token") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = branchInput,
+            onValueChange = { branchInput = it },
+            label = { Text("Branch") },
+            placeholder = { Text("main") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
 
         OutlinedTextField(
-            value = keyInput,
-            onValueChange = {
-                keyInput = it
-            },
-            label = {
-                Text("Access Key")
-            },
-            placeholder = {
-                Text("Paste your Access Key")
-            },
+            value = filePathInput,
+            onValueChange = { filePathInput = it },
+            label = { Text("JSON file path") },
+            placeholder = { Text("data/mercado.json") },
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth()
         )
 
         Button(
             onClick = {
                 onSaveCloudConfig(
-                    urlInput,
-                    binInput,
-                    keyInput
+                    urlInput.trim(),
+                    tokenInput.trim(),
+                    branchInput.trim(),
+                    filePathInput.trim()
                 )
             },
             enabled = urlInput.isNotBlank() &&
-                    binInput.isNotBlank() &&
-                    keyInput.isNotBlank(),
+                    tokenInput.isNotBlank() &&
+                    branchInput.isNotBlank() &&
+                    filePathInput.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Save API settings")
+            Text("Save GitHub settings")
         }
 
         HorizontalDivider()
@@ -156,7 +154,7 @@ fun ManageScreen(
                 onCheckedChange = onSyncEnabledChange
             )
 
-            Text("Sync to cloud")
+            Text("Sync to GitHub")
         }
 
         Text(
@@ -174,11 +172,11 @@ fun ManageScreen(
 
         Button(
             onClick = onSyncNow,
-            enabled = syncEnabled &&
-                    !syncBusy &&
-                    apiUrl.isNotBlank() &&
-                    binId.isNotBlank() &&
-                    accessKey.isNotBlank(),
+            enabled = syncEnabled && !syncBusy &&
+                    repositoryUrl.isNotBlank() &&
+                    token.isNotBlank() &&
+                    branch.isNotBlank() &&
+                    filePath.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(
@@ -192,8 +190,6 @@ fun ManageScreen(
 
         HorizontalDivider()
 
-        // Product management.
-
         Text(
             "Product management",
             style = MaterialTheme.typography.titleMedium
@@ -204,15 +200,11 @@ fun ManageScreen(
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.ok }
         ) {
-            Text(
-                "Clear selected items (${items.count { it.ok }})"
-            )
+            Text("Clear selected items (${items.count { it.ok }})")
         }
 
         Button(
-            onClick = {
-                requestConfirmation("quantity")
-            },
+            onClick = { requestConfirmation("quantity") },
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.count != 0 }
         ) {
@@ -220,9 +212,7 @@ fun ManageScreen(
         }
 
         Button(
-            onClick = {
-                requestConfirmation("prices")
-            },
+            onClick = { requestConfirmation("prices") },
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.price != 0.0 }
         ) {
@@ -232,9 +222,7 @@ fun ManageScreen(
         Spacer(Modifier.height(8.dp))
 
         Button(
-            onClick = {
-                requestConfirmation("all")
-            },
+            onClick = { requestConfirmation("all") },
             modifier = Modifier.fillMaxWidth(),
             enabled = items.isNotEmpty(),
             colors = ButtonDefaults.buttonColors(
@@ -246,9 +234,7 @@ fun ManageScreen(
     }
 
     if (showDialog) {
-
         val message = when (action) {
-
             "quantity" ->
                 "Reset the quantity of all products to zero?"
 
@@ -262,33 +248,22 @@ fun ManageScreen(
         }
 
         AlertDialog(
-
             onDismissRequest = {
                 showDialog = false
             },
-
             title = {
                 Text("Confirm action")
             },
-
             text = {
                 Text(message)
             },
-
             confirmButton = {
                 TextButton(
                     onClick = {
-
                         when (action) {
-
-                            "quantity" ->
-                                onClearQuantity()
-
-                            "prices" ->
-                                onClearPrices()
-
-                            "all" ->
-                                onClearAll()
+                            "quantity" -> onClearQuantity()
+                            "prices" -> onClearPrices()
+                            "all" -> onClearAll()
                         }
 
                         showDialog = false
@@ -300,7 +275,6 @@ fun ManageScreen(
                     )
                 }
             },
-
             dismissButton = {
                 TextButton(
                     onClick = {
