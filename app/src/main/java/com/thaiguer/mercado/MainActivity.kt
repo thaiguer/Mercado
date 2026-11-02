@@ -441,13 +441,17 @@ fun MercadoApp() {
                     onClearSelected = {
 
                         val now = System.currentTimeMillis()
-                        val selected = items.filter { it.ok }
 
-                        deleted = deleted + selected.associate {
-                            it.id to now
+                        items = items.map { item ->
+                            if (item.ok) {
+                                item.copy(
+                                    ok = false,
+                                    modifiedAt = now
+                                )
+                            } else {
+                                item
+                            }
                         }
-
-                        items = items.filterNot { it.ok }
                     },
 
                     onClearQuantity = {

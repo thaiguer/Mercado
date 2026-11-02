@@ -151,7 +151,6 @@ fun ManageScreen(
         Row(
             verticalAlignment = Alignment.CenterVertically
         ) {
-
             Checkbox(
                 checked = syncEnabled,
                 onCheckedChange = onSyncEnabledChange
@@ -182,7 +181,6 @@ fun ManageScreen(
                     accessKey.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
-
             Text(
                 if (syncBusy) {
                     "Synchronizing..."
@@ -202,9 +200,7 @@ fun ManageScreen(
         )
 
         Button(
-            onClick = {
-                requestConfirmation("selected")
-            },
+            onClick = onClearSelected,
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.ok }
         ) {
@@ -253,9 +249,6 @@ fun ManageScreen(
 
         val message = when (action) {
 
-            "selected" ->
-                "Remove all purchased items from the list?"
-
             "quantity" ->
                 "Reset the quantity of all products to zero?"
 
@@ -283,14 +276,10 @@ fun ManageScreen(
             },
 
             confirmButton = {
-
                 TextButton(
                     onClick = {
 
                         when (action) {
-
-                            "selected" ->
-                                onClearSelected()
 
                             "quantity" ->
                                 onClearQuantity()
@@ -305,7 +294,6 @@ fun ManageScreen(
                         showDialog = false
                     }
                 ) {
-
                     Text(
                         "Confirm",
                         color = MaterialTheme.colorScheme.error
@@ -314,7 +302,6 @@ fun ManageScreen(
             },
 
             dismissButton = {
-
                 TextButton(
                     onClick = {
                         showDialog = false
