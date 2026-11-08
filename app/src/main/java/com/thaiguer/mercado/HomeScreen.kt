@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -11,7 +12,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import kotlinx.coroutines.launch
 import com.thaiguer.mercado.core.MercadoItem
 
@@ -30,11 +30,23 @@ fun HomeScreen(
         mutableStateOf<MercadoItem?>(null)
     }
 
+    var searchQuery by remember {
+        mutableStateOf("")
+    }
+
     val total = products.sumOf { it.total }
 
     val purchased = products
         .filter { it.ok }
         .sumOf { it.total }
+
+    val totalVolumes = products
+        .filter { it.ok }
+        .sumOf { it.count }
+
+    val filteredProducts = products.filter {
+        it.name.contains(searchQuery, ignoreCase = true)
+    }
 
     Column(
         modifier = Modifier
@@ -49,7 +61,7 @@ fun HomeScreen(
             style = MaterialTheme.typography.headlineMedium
         )
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
         Card(
             modifier = Modifier.fillMaxWidth()
@@ -68,10 +80,16 @@ fun HomeScreen(
                     "Purchased: %.2f".format(purchased),
                     style = MaterialTheme.typography.bodyMedium
                 )
+
+                Spacer(Modifier.height(8.dp))
+
+                Text(
+                    text = "Total Volumes: ${products.filter { it.ok }.sumOf { it.count }}"
+                )
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
         Button(
             onClick = {
@@ -84,12 +102,30 @@ fun HomeScreen(
 
         Spacer(Modifier.height(8.dp))
 
+        // Search is directly below Add product.
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = {
+                searchQuery = it
+            },
+            label = {
+                Text("Search products")
+            },
+            placeholder = {
+                Text("Enter product name")
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(8.dp))
+
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(
-                products,
+                filteredProducts,
                 key = { it.id }
             ) { item ->
 
@@ -236,7 +272,6 @@ fun HomeScreen(
         }
     }
 
-    // Remove confirmation dialog
     itemToRemove?.let { item ->
         AlertDialog(
             onDismissRequest = {
@@ -270,7 +305,6 @@ fun HomeScreen(
         )
     }
 
-    // Add product dialog
     if (showAddDialog) {
         var name by remember {
             mutableStateOf("")
@@ -278,6 +312,10 @@ fun HomeScreen(
 
         var count by remember {
             mutableStateOf("1")
+        }
+
+        var price by remember {
+            mutableStateOf("")
         }
 
         AlertDialog(
@@ -317,12 +355,41 @@ fun HomeScreen(
                             keyboardType = KeyboardType.Number
                         )
                     )
+
+                    OutlinedTextField(
+                        value = price,
+                        onValueChange = { value ->
+                            val normalized = value.replace(",", ".")
+
+                            if (
+                                normalized.isEmpty() ||
+                                normalized.matches(
+                                    Regex("^\\d*\\.?\\d{0,2}$")
+                                )
+                            ) {
+                                price = value
+                            }
+                        },
+                        label = {
+                            Text("Unit price")
+                        },
+                        placeholder = {
+                            Text("0.00")
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal
+                        )
+                    )
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         val newQuantity = count.toIntOrNull()
+                        val newPrice = price
+                            .replace(",", ".")
+                            .toDoubleOrNull() ?: 0.0
 
                         if (
                             name.isNotBlank() &&
@@ -334,13 +401,15 @@ fun HomeScreen(
                                     id = "",
                                     name = name.trim(),
                                     count = newQuantity,
-                                    price = 0.0
+                                    price = newPrice
                                 )
                             )
 
                             showAddDialog = false
                         }
-                    }
+                    },
+                    enabled = name.isNotBlank() &&
+                            (count.toIntOrNull() ?: 0) > 0
                 ) {
                     Text("Add")
                 }

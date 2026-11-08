@@ -76,7 +76,6 @@ private fun loadSnapshot(
     )
 
     if (savedData == null) {
-
         return SyncSnapshot(
             items = listOf(
                 MercadoItem(
@@ -112,22 +111,17 @@ private fun loadSnapshot(
     }
 
     return try {
-
         if (savedData.trimStart().startsWith("{")) {
-
             CloudSync.parseSnapshot(
                 JSONObject(savedData)
             )
-
         } else {
-
             // Compatibility with the previous JSON array format.
 
             val array = JSONArray(savedData)
             val items = mutableListOf<MercadoItem>()
 
             for (i in 0 until array.length()) {
-
                 val obj = array.getJSONObject(i)
 
                 items.add(
@@ -144,7 +138,6 @@ private fun loadSnapshot(
 
             SyncSnapshot(items = items)
         }
-
     } catch (e: Exception) {
         SyncSnapshot()
     }
@@ -180,7 +173,7 @@ fun MercadoApp() {
         mutableStateOf(initialSnapshot.deleted)
     }
 
-    // GitHub repository settings.
+    // GitHub settings
 
     var repositoryUrl by remember {
         mutableStateOf(
@@ -228,16 +221,14 @@ fun MercadoApp() {
     }
 
     var syncMessage by remember {
-        mutableStateOf(
-            "GitHub sync is disabled."
-        )
+        mutableStateOf("GitHub sync is disabled.")
     }
 
     var syncBusy by remember {
         mutableStateOf(false)
     }
 
-    // Synchronization control.
+    // Synchronization control
 
     var syncPending by remember {
         mutableStateOf(false)
@@ -269,10 +260,9 @@ fun MercadoApp() {
         Mutex()
     }
 
-    // Save shopping list locally.
+    // Save shopping list locally
 
     LaunchedEffect(items, deleted) {
-
         saveSnapshot(
             context,
             SyncSnapshot(
@@ -282,7 +272,7 @@ fun MercadoApp() {
         )
     }
 
-    // Save GitHub settings locally.
+    // Save GitHub settings locally
 
     LaunchedEffect(
         repositoryUrl,
@@ -290,7 +280,6 @@ fun MercadoApp() {
         githubBranch,
         githubFilePath
     ) {
-
         preferences.edit()
             .putString(
                 "github_repository_url",
@@ -311,10 +300,9 @@ fun MercadoApp() {
             .apply()
     }
 
-    // Save synchronization preference.
+    // Save synchronization preference
 
     LaunchedEffect(syncEnabled) {
-
         preferences.edit()
             .putBoolean(
                 "sync_enabled",
@@ -323,13 +311,12 @@ fun MercadoApp() {
             .apply()
 
         if (!syncEnabled) {
-
             syncMessage =
                 "GitHub sync is disabled. Your list is saved locally."
         }
     }
 
-    // Save GitHub configuration.
+    // Save GitHub configuration
 
     fun saveCloudConfig(
         newRepositoryUrl: String,
@@ -337,13 +324,9 @@ fun MercadoApp() {
         newBranch: String,
         newFilePath: String
     ) {
-
         repositoryUrl = newRepositoryUrl.trim()
-
         githubToken = newToken.trim()
-
         githubBranch = newBranch.trim()
-
         githubFilePath = newFilePath
             .trim()
             .trim('/')
@@ -351,13 +334,12 @@ fun MercadoApp() {
         syncMessage = "GitHub settings saved."
     }
 
-    // Synchronization function.
+    // Synchronization function
 
     fun requestSync(
         force: Boolean = false,
         checkResumeInterval: Boolean = false
     ) {
-
         if (!syncEnabled) return
 
         if (
@@ -366,20 +348,14 @@ fun MercadoApp() {
             githubBranch.isBlank() ||
             githubFilePath.isBlank()
         ) {
-
             syncMessage =
                 "Enter the GitHub repository URL, token, branch and file path."
-
             return
         }
 
         val now = System.currentTimeMillis()
 
-        // Avoid unnecessary synchronization when returning
-        // to the app too frequently.
-
         if (checkResumeInterval) {
-
             if (lastSyncAttemptAt == 0L) {
                 return
             }
@@ -390,28 +366,19 @@ fun MercadoApp() {
         }
 
         if (force) {
-
             retryJob?.cancel()
             retryJob = null
-
             retryAttempt = 0
         }
 
-        // Prevent simultaneous synchronization.
-
         if (!syncMutex.tryLock()) {
-
             syncPending = true
-
             return
         }
 
         scope.launch {
-
             try {
-
                 syncBusy = true
-
                 syncPending = false
 
                 lastSyncAttemptAt =
@@ -420,7 +387,6 @@ fun MercadoApp() {
                 syncMessage = "Synchronizing with GitHub..."
 
                 try {
-
                     val config = CloudConfig(
                         repositoryUrl = repositoryUrl,
                         token = githubToken,
@@ -428,40 +394,38 @@ fun MercadoApp() {
                         filePath = githubFilePath
                     )
 
-                    // Download remote data and SHA.
+                    // Download remote data and SHA
 
                     val remote = CloudSync.downloadWithMetadata(
                         config
                     )
 
-                    // Capture the latest local data.
+                    // Capture latest local data
 
                     val local = SyncSnapshot(
                         items = items,
                         deleted = deleted
                     )
 
-                    // Merge local and remote data.
+                    // Merge local and remote data
 
                     val merged = CloudSync.merge(
                         local,
                         remote.snapshot
                     )
 
-                    // Update local state only when necessary.
+                    // Update local state only when necessary
 
                     if (merged != local) {
-
                         suppressNextDebounce = true
 
                         items = merged.items
                         deleted = merged.deleted
                     }
 
-                    // Upload only if remote data is different.
+                    // Upload only if remote data is different
 
                     if (merged != remote.snapshot) {
-
                         CloudSync.upload(
                             snapshot = merged,
                             config = config,
@@ -472,21 +436,16 @@ fun MercadoApp() {
                     syncMessage =
                         "GitHub synchronized successfully."
 
-                    // Reset retry counter after success.
-
                     retryAttempt = 0
 
                     retryJob?.cancel()
                     retryJob = null
 
                 } catch (e: Exception) {
-
                     syncMessage =
                         "GitHub sync failed: " +
                                 "${e.message ?: "Unknown error"}. " +
                                 "Your local list is still available."
-
-                    // Progressive retry intervals.
 
                     val retryDelays = listOf(
                         5L,
@@ -508,36 +467,28 @@ fun MercadoApp() {
                     retryJob?.cancel()
 
                     retryJob = scope.launch {
-
                         delay(delaySeconds * 1000L)
 
                         if (syncEnabled) {
                             requestSync()
                         }
                     }
-
                 }
 
             } finally {
-
                 syncBusy = false
 
                 syncMutex.unlock()
 
-                // Process requests that arrived while
-                // another synchronization was running.
-
                 if (syncPending && syncEnabled) {
-
                     syncPending = false
-
                     requestSync()
                 }
             }
         }
     }
 
-    // Synchronize when settings change or sync is enabled.
+    // Synchronize when settings change or sync is enabled
 
     LaunchedEffect(
         syncEnabled,
@@ -546,7 +497,6 @@ fun MercadoApp() {
         githubBranch,
         githubFilePath
     ) {
-
         if (
             syncEnabled &&
             repositoryUrl.isNotBlank() &&
@@ -554,17 +504,14 @@ fun MercadoApp() {
             githubBranch.isNotBlank() &&
             githubFilePath.isNotBlank()
         ) {
-
             requestSync(force = true)
         }
     }
 
-    // Cancel retry attempts when synchronization is disabled.
+    // Cancel retries when synchronization is disabled
 
     LaunchedEffect(syncEnabled) {
-
         if (!syncEnabled) {
-
             retryJob?.cancel()
             retryJob = null
 
@@ -573,47 +520,33 @@ fun MercadoApp() {
         }
     }
 
-    // Debounce: wait five seconds after list changes.
+    // Debounce: wait five seconds after list changes
 
     LaunchedEffect(items, deleted) {
 
-        // Ignore the initial list composition.
-
         if (!initialListObserved) {
-
             initialListObserved = true
-
             return@LaunchedEffect
         }
 
-        // Ignore changes applied from GitHub.
-
         if (suppressNextDebounce) {
-
             suppressNextDebounce = false
-
             return@LaunchedEffect
         }
 
         if (syncEnabled) {
-
             delay(5000)
-
             requestSync()
         }
     }
 
-    // Synchronize when returning to the foreground.
-    // Only if at least one minute has passed since
-    // the previous synchronization attempt.
+    // Synchronize when returning to foreground
 
     DisposableEffect(lifecycleOwner) {
-
         val observer = LifecycleEventObserver {
                 _, event ->
 
             if (event == Lifecycle.Event.ON_RESUME) {
-
                 requestSync(
                     checkResumeInterval = true
                 )
@@ -634,17 +567,13 @@ fun MercadoApp() {
             AppDestinations.entries.forEach { destination ->
 
                 item(
-
                     icon = {
                         Text(destination.icon)
                     },
-
                     label = {
                         Text(destination.label)
                     },
-
                     selected = currentDestination == destination,
-
                     onClick = {
                         currentDestination = destination
                     }
@@ -659,43 +588,32 @@ fun MercadoApp() {
             AppDestinations.HOME -> {
 
                 HomeScreen(
-
                     products = items,
 
                     onAdd = { item ->
-
                         items = items + item.copy(
-
                             id = UUID.randomUUID().toString(),
-
-                            modifiedAt =
-                                System.currentTimeMillis()
+                            modifiedAt = System.currentTimeMillis()
                         )
                     },
 
                     onUpdate = { updated ->
-
                         items = items.map {
-
                             if (it.id == updated.id) {
-
                                 updated.copy(
                                     modifiedAt =
                                         System.currentTimeMillis()
                                 )
-
                             } else {
-
                                 it
                             }
                         }
                     },
 
                     onRemove = { id ->
+                        val now = System.currentTimeMillis()
 
-                        deleted = deleted + (
-                                id to System.currentTimeMillis()
-                                )
+                        deleted = deleted + (id to now)
 
                         items = items.filterNot {
                             it.id == id
@@ -710,34 +628,45 @@ fun MercadoApp() {
 
                     items = items,
 
-                    onClearSelected = {
+                    // Uncheck selected products
 
-                        val now =
-                            System.currentTimeMillis()
+                    onClearSelected = {
+                        val now = System.currentTimeMillis()
 
                         items = items.map { item ->
-
                             if (item.ok) {
-
                                 item.copy(
                                     ok = false,
                                     modifiedAt = now
                                 )
-
                             } else {
-
                                 item
                             }
                         }
                     },
 
-                    onClearQuantity = {
+                    // Delete selected products
 
-                        val now =
-                            System.currentTimeMillis()
+                    onRemoveSelected = {
+                        val now = System.currentTimeMillis()
+
+                        val selectedIds = items
+                            .filter { it.ok }
+                            .map { it.id }
+
+                        deleted = deleted + selectedIds.associateWith {
+                            now
+                        }
+
+                        items = items.filterNot {
+                            it.ok
+                        }
+                    },
+
+                    onClearQuantity = {
+                        val now = System.currentTimeMillis()
 
                         items = items.map {
-
                             it.copy(
                                 count = 0,
                                 modifiedAt = now
@@ -746,12 +675,9 @@ fun MercadoApp() {
                     },
 
                     onClearPrices = {
-
-                        val now =
-                            System.currentTimeMillis()
+                        val now = System.currentTimeMillis()
 
                         items = items.map {
-
                             it.copy(
                                 price = 0.0,
                                 modifiedAt = now
@@ -760,19 +686,16 @@ fun MercadoApp() {
                     },
 
                     onClearAll = {
-
-                        val now =
-                            System.currentTimeMillis()
+                        val now = System.currentTimeMillis()
 
                         deleted = deleted + items.associate {
-
                             it.id to now
                         }
 
                         items = emptyList()
                     },
 
-                    // GitHub configuration.
+                    // GitHub configuration
 
                     repositoryUrl = repositoryUrl,
 
@@ -796,7 +719,7 @@ fun MercadoApp() {
                         )
                     },
 
-                    // Synchronization controls.
+                    // Synchronization controls
 
                     syncEnabled = syncEnabled,
 

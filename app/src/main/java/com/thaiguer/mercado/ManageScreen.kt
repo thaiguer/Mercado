@@ -17,6 +17,7 @@ import com.thaiguer.mercado.core.MercadoItem
 fun ManageScreen(
     items: List<MercadoItem>,
     onClearSelected: () -> Unit,
+    onRemoveSelected: () -> Unit,
     onClearQuantity: () -> Unit,
     onClearPrices: () -> Unit,
     onClearAll: () -> Unit,
@@ -86,8 +87,12 @@ fun ManageScreen(
 
         OutlinedTextField(
             value = urlInput,
-            onValueChange = { urlInput = it },
-            label = { Text("Repository URL") },
+            onValueChange = {
+                urlInput = it
+            },
+            label = {
+                Text("Repository URL")
+            },
             placeholder = {
                 Text("https://github.com/user/repository")
             },
@@ -100,9 +105,15 @@ fun ManageScreen(
 
         OutlinedTextField(
             value = tokenInput,
-            onValueChange = { tokenInput = it },
-            label = { Text("Personal Access Token") },
-            placeholder = { Text("Paste your GitHub token") },
+            onValueChange = {
+                tokenInput = it
+            },
+            label = {
+                Text("Personal Access Token")
+            },
+            placeholder = {
+                Text("Paste your GitHub token")
+            },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth()
@@ -110,18 +121,30 @@ fun ManageScreen(
 
         OutlinedTextField(
             value = branchInput,
-            onValueChange = { branchInput = it },
-            label = { Text("Branch") },
-            placeholder = { Text("main") },
+            onValueChange = {
+                branchInput = it
+            },
+            label = {
+                Text("Branch")
+            },
+            placeholder = {
+                Text("main")
+            },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
 
         OutlinedTextField(
             value = filePathInput,
-            onValueChange = { filePathInput = it },
-            label = { Text("JSON file path") },
-            placeholder = { Text("data/mercado.json") },
+            onValueChange = {
+                filePathInput = it
+            },
+            label = {
+                Text("JSON file path")
+            },
+            placeholder = {
+                Text("data/mercado.json")
+            },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -172,7 +195,8 @@ fun ManageScreen(
 
         Button(
             onClick = onSyncNow,
-            enabled = syncEnabled && !syncBusy &&
+            enabled = syncEnabled &&
+                    !syncBusy &&
                     repositoryUrl.isNotBlank() &&
                     token.isNotBlank() &&
                     branch.isNotBlank() &&
@@ -196,15 +220,30 @@ fun ManageScreen(
         )
 
         Button(
+            onClick = {
+                requestConfirmation("removeSelected")
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = items.any { it.ok },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error
+            )
+        ) {
+            Text("Remove selected items (${items.count { it.ok }})")
+        }
+
+        Button(
             onClick = onClearSelected,
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.ok }
         ) {
-            Text("Clear selected items (${items.count { it.ok }})")
+            Text("Uncheck selected items (${items.count { it.ok }})")
         }
 
         Button(
-            onClick = { requestConfirmation("quantity") },
+            onClick = {
+                requestConfirmation("quantity")
+            },
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.count != 0 }
         ) {
@@ -212,7 +251,9 @@ fun ManageScreen(
         }
 
         Button(
-            onClick = { requestConfirmation("prices") },
+            onClick = {
+                requestConfirmation("prices")
+            },
             modifier = Modifier.fillMaxWidth(),
             enabled = items.any { it.price != 0.0 }
         ) {
@@ -222,7 +263,9 @@ fun ManageScreen(
         Spacer(Modifier.height(8.dp))
 
         Button(
-            onClick = { requestConfirmation("all") },
+            onClick = {
+                requestConfirmation("all")
+            },
             modifier = Modifier.fillMaxWidth(),
             enabled = items.isNotEmpty(),
             colors = ButtonDefaults.buttonColors(
@@ -235,6 +278,9 @@ fun ManageScreen(
 
     if (showDialog) {
         val message = when (action) {
+            "removeSelected" ->
+                "Remove all selected products permanently?"
+
             "quantity" ->
                 "Reset the quantity of all products to zero?"
 
@@ -261,6 +307,7 @@ fun ManageScreen(
                 TextButton(
                     onClick = {
                         when (action) {
+                            "removeSelected" -> onRemoveSelected()
                             "quantity" -> onClearQuantity()
                             "prices" -> onClearPrices()
                             "all" -> onClearAll()
