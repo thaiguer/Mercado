@@ -16,6 +16,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import java.util.UUID
 
+import java.text.Normalizer
+import java.util.Locale
+
 data class MercadoUiState(
     val items: List<MercadoItem> = emptyList(),
     val deleted: Map<String, Long> = emptyMap(),

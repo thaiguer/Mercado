@@ -15,6 +15,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import com.thaiguer.mercado.core.MercadoItem
 
+import java.text.Normalizer
+import java.util.Locale
+
 @Composable
 fun HomeScreen(
     products: List<MercadoItem>,
@@ -45,7 +48,8 @@ fun HomeScreen(
         .sumOf { it.count }
 
     val filteredProducts = products.filter {
-        it.name.contains(searchQuery, ignoreCase = true)
+        it.name.normalizeForSearch()
+            .contains(searchQuery.normalizeForSearch())
     }
 
     Column(
@@ -425,4 +429,11 @@ fun HomeScreen(
             }
         )
     }
+}
+
+private fun String.normalizeForSearch(): String {
+    return Normalizer.normalize(this, Normalizer.Form.NFD)
+        .replace(Regex("\\p{Mn}+"), "")
+        .lowercase(Locale.ROOT)
+        .trim()
 }
