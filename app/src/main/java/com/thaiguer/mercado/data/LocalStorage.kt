@@ -1,7 +1,7 @@
 package com.thaiguer.mercado.data
 
 import android.content.Context
-import com.thaiguer.mercado.CloudConfig
+import com.thaiguer.mercado.FirebaseConfig
 import com.thaiguer.mercado.CloudSync
 import com.thaiguer.mercado.SyncSnapshot
 import com.thaiguer.mercado.core.MercadoItem as CoreMercadoItem
@@ -16,21 +16,17 @@ class LocalStorage(context: Context) {
             Context.MODE_PRIVATE
         )
 
-    fun loadSnapshot(): SyncSnapshot {
-        val savedData = preferences.getString(
-            "shopping_list",
-            null
-        )
+    // ---------------------------------------------------------
+    // Shopping list
+    // ---------------------------------------------------------
 
-        if (savedData == null) {
-            return createInitialSnapshot()
-        }
+    fun loadSnapshot(): SyncSnapshot {
+        val savedData = preferences.getString("shopping_list", null)
+            ?: return createInitialSnapshot()
 
         return try {
             if (savedData.trimStart().startsWith("{")) {
-                CloudSync.parseSnapshot(
-                    JSONObject(savedData)
-                )
+                CloudSync.parseSnapshot(JSONObject(savedData))
             } else {
                 // Compatibility with the previous JSON array format.
                 val array = JSONArray(savedData)
@@ -67,53 +63,64 @@ class LocalStorage(context: Context) {
             .apply()
     }
 
-    fun loadCloudConfig(): CloudConfig {
-        return CloudConfig(
-            repositoryUrl = preferences.getString(
-                "github_repository_url",
-                ""
+    // ---------------------------------------------------------
+    // Firebase configuration
+    // ---------------------------------------------------------
+
+    fun loadFirebaseConfig(): FirebaseConfig {
+        return FirebaseConfig(
+            apiKey = preferences.getString(
+                "firebase_api_key", ""
             ) ?: "",
-            token = preferences.getString(
-                "github_token",
-                ""
+
+            projectId = preferences.getString(
+                "firebase_project_id", ""
             ) ?: "",
-            branch = preferences.getString(
-                "github_branch",
-                "main"
-            ) ?: "main",
-            filePath = preferences.getString(
-                "github_file_path",
-                "data/mercado.json"
-            ) ?: "data/mercado.json"
+
+            applicationId = preferences.getString(
+                "firebase_application_id", ""
+            ) ?: "",
+
+            databaseUrl = preferences.getString(
+                "firebase_database_url", ""
+            ) ?: "",
+
+            listId = preferences.getString(
+                "firebase_list_id", "mercado"
+            ) ?: "mercado"
         )
     }
 
-    fun saveCloudConfig(config: CloudConfig) {
+    fun saveFirebaseConfig(config: FirebaseConfig) {
         preferences.edit()
-            .putString(
-                "github_repository_url",
-                config.repositoryUrl
-            )
-            .putString(
-                "github_token",
-                config.token
-            )
-            .putString(
-                "github_branch",
-                config.branch
-            )
-            .putString(
-                "github_file_path",
-                config.filePath
-            )
+            .putString("firebase_api_key", config.apiKey)
+            .putString("firebase_project_id", config.projectId)
+            .putString("firebase_application_id", config.applicationId)
+            .putString("firebase_database_url", config.databaseUrl)
+            .putString("firebase_list_id", config.listId)
             .apply()
     }
 
+    // ---------------------------------------------------------
+    // Authentication
+    // ---------------------------------------------------------
+
+    fun loadEmail(): String {
+        return preferences.getString("firebase_email", "") ?: ""
+    }
+
+    fun saveEmail(email: String) {
+        preferences.edit()
+            .putString("firebase_email", email)
+            .apply()
+    }
+
+    // ---------------------------------------------------------
+    // Synchronization preference
+    // ---------------------------------------------------------
+
     fun loadSyncEnabled(): Boolean {
-        return preferences.getBoolean(
-            "sync_enabled",
-            false
-        )
+        return preferences.getBoolean("sync_enabled", false)
     }
 
     fun saveSyncEnabled(enabled: Boolean) {
@@ -121,6 +128,10 @@ class LocalStorage(context: Context) {
             .putBoolean("sync_enabled", enabled)
             .apply()
     }
+
+    // ---------------------------------------------------------
+    // Initial shopping list
+    // ---------------------------------------------------------
 
     private fun createInitialSnapshot(): SyncSnapshot {
         return SyncSnapshot(

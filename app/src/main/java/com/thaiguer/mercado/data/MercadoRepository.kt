@@ -1,13 +1,14 @@
 package com.thaiguer.mercado.data
 
 import android.content.Context
-import com.thaiguer.mercado.CloudConfig
-import com.thaiguer.mercado.CloudSync
+import com.thaiguer.mercado.FirebaseConfig
 import com.thaiguer.mercado.SyncSnapshot
 
 class MercadoRepository(context: Context) {
 
     private val localStorage = LocalStorage(context)
+
+    // Local shopping list
 
     fun loadSnapshot(): SyncSnapshot {
         return localStorage.loadSnapshot()
@@ -17,13 +18,17 @@ class MercadoRepository(context: Context) {
         localStorage.saveSnapshot(snapshot)
     }
 
-    fun loadCloudConfig(): CloudConfig {
-        return localStorage.loadCloudConfig()
+    // Firebase configuration
+
+    fun loadFirebaseConfig(): FirebaseConfig {
+        return localStorage.loadFirebaseConfig()
     }
 
-    fun saveCloudConfig(config: CloudConfig) {
-        localStorage.saveCloudConfig(config)
+    fun saveFirebaseConfig(config: FirebaseConfig) {
+        localStorage.saveFirebaseConfig(config)
     }
+
+    // Synchronization preference
 
     fun loadSyncEnabled(): Boolean {
         return localStorage.loadSyncEnabled()
@@ -33,26 +38,13 @@ class MercadoRepository(context: Context) {
         localStorage.saveSyncEnabled(enabled)
     }
 
-    suspend fun synchronize(
-        localSnapshot: SyncSnapshot,
-        config: CloudConfig
-    ): SyncSnapshot {
+    // Remember the email, but never the password
 
-        val remote = CloudSync.downloadWithMetadata(config)
+    fun loadEmail(): String {
+        return localStorage.loadEmail()
+    }
 
-        val merged = CloudSync.merge(
-            localSnapshot,
-            remote.snapshot
-        )
-
-        if (merged != remote.snapshot) {
-            CloudSync.upload(
-                snapshot = merged,
-                config = config,
-                existingSha = remote.sha
-            )
-        }
-
-        return merged
+    fun saveEmail(email: String) {
+        localStorage.saveEmail(email)
     }
 }

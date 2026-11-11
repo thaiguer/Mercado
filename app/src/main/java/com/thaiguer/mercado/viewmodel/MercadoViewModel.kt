@@ -3,7 +3,10 @@ package com.thaiguer.mercado.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.thaiguer.mercado.CloudConfig
+import com.google.firebase.database.ValueEventListener
+import com.thaiguer.mercado.CloudSync
+import com.thaiguer.mercado.FirebaseConfig
+import com.thaiguer.mercado.FirebaseService
 import com.thaiguer.mercado.SyncSnapshot
 import com.thaiguer.mercado.core.MercadoItem
 import com.thaiguer.mercado.data.MercadoRepository
@@ -13,23 +16,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import java.util.UUID
-
-import java.text.Normalizer
-import java.util.Locale
 
 data class MercadoUiState(
     val items: List<MercadoItem> = emptyList(),
     val deleted: Map<String, Long> = emptyMap(),
-    val cloudConfig: CloudConfig = CloudConfig(
-        repositoryUrl = "",
-        token = "",
-        branch = "main",
-        filePath = "data/mercado.json"
-    ),
+
+    val firebaseConfig: FirebaseConfig = FirebaseConfig(),
+
+    val email: String = "",
+    val firebaseUserEmail: String? = null,
+
     val syncEnabled: Boolean = false,
-    val syncMessage: String = "GitHub sync is disabled.",
+    val syncMessage: String = "Firebase synchronization is disabled.",
     val syncBusy: Boolean = false
 )
 
@@ -46,36 +45,227 @@ class MercadoViewModel(
     val uiState: StateFlow<MercadoUiState> =
         _uiState.asStateFlow()
 
-    private val syncMutex = Mutex()
+    private var firebaseService: FirebaseService? = null
+    private var firebaseListener: ValueEventListener? = null
 
     private var debounceJob: Job? = null
-    private var retryJob: Job? = null
 
-    private var retryAttempt = 0
+    private var syncInProgress = false
     private var syncPending = false
-    private var lastSyncAttemptAt = 0L
-
-    private val retryDelays = listOf(
-        5L,
-        15L,
-        30L,
-        60L,
-        120L
-    )
+    private var pendingOnSuccess: (() -> Unit)? = null
 
     private fun createInitialState(): MercadoUiState {
         val snapshot = repository.loadSnapshot()
+        val config = repository.loadFirebaseConfig()
+        val enabled = repository.loadSyncEnabled()
 
         return MercadoUiState(
             items = snapshot.items,
             deleted = snapshot.deleted,
-            cloudConfig = repository.loadCloudConfig(),
-            syncEnabled = repository.loadSyncEnabled(),
-            syncMessage = if (repository.loadSyncEnabled()) {
-                "Ready to synchronize with GitHub."
+            firebaseConfig = config,
+            email = repository.loadEmail(),
+            syncEnabled = enabled,
+            syncMessage = if (enabled) {
+                "Firebase synchronization is enabled."
             } else {
-                "GitHub sync is disabled."
+                "Firebase synchronization is disabled."
             }
+        )
+    }
+
+    init {
+        initializeFirebase()
+    }
+
+    // ---------------------------------------------------------
+    // Firebase initialization
+    // ---------------------------------------------------------
+
+    private fun initializeFirebase() {
+        val config = _uiState.value.firebaseConfig
+
+        if (!config.isValid) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Enter and save your Firebase configuration."
+            )
+            return
+        }
+
+        try {
+            firebaseService = FirebaseService(
+                getApplication(),
+                config
+            )
+
+            val user = firebaseService?.currentUser()
+
+            _uiState.value = _uiState.value.copy(
+                firebaseUserEmail = user?.email
+            )
+
+            if (user != null && _uiState.value.syncEnabled) {
+                synchronizeAndListen()
+            } else if (user == null && _uiState.value.syncEnabled) {
+                _uiState.value = _uiState.value.copy(
+                    syncMessage = "Sign in to enable synchronization."
+                )
+            }
+
+        } catch (e: Exception) {
+            firebaseService = null
+
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Firebase initialization failed: ${e.message}"
+            )
+        }
+    }
+
+    fun saveFirebaseConfig(config: FirebaseConfig) {
+        val cleanedConfig = config.copy(
+            apiKey = config.apiKey.trim(),
+            projectId = config.projectId.trim(),
+            applicationId = config.applicationId.trim(),
+            databaseUrl = config.databaseUrl.trim(),
+            listId = config.listId.trim()
+        )
+
+        stopFirebaseListener()
+
+        firebaseService = null
+
+        repository.saveFirebaseConfig(cleanedConfig)
+
+        _uiState.value = _uiState.value.copy(
+            firebaseConfig = cleanedConfig,
+            firebaseUserEmail = null,
+            syncMessage = "Firebase settings saved."
+        )
+
+        if (!cleanedConfig.isValid) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Firebase configuration is incomplete."
+            )
+            return
+        }
+
+        try {
+            firebaseService = FirebaseService(
+                getApplication(),
+                cleanedConfig
+            )
+
+            val user = firebaseService?.currentUser()
+
+            _uiState.value = _uiState.value.copy(
+                firebaseUserEmail = user?.email,
+                syncMessage = if (user != null) {
+                    "Firebase settings saved. Ready to synchronize."
+                } else {
+                    "Firebase settings saved. Sign in to continue."
+                }
+            )
+
+            if (user != null && _uiState.value.syncEnabled) {
+                synchronizeAndListen()
+            }
+
+        } catch (e: Exception) {
+            firebaseService = null
+
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Firebase initialization failed: ${e.message}"
+            )
+        }
+    }
+
+    // ---------------------------------------------------------
+    // Authentication
+    // ---------------------------------------------------------
+
+    fun updateEmail(email: String) {
+        repository.saveEmail(email)
+
+        _uiState.value = _uiState.value.copy(
+            email = email
+        )
+    }
+
+    fun signIn(email: String, password: String) {
+        val config = _uiState.value.firebaseConfig
+
+        if (!config.isValid) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Save a valid Firebase configuration first."
+            )
+            return
+        }
+
+        if (email.isBlank() || password.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Enter your email and password."
+            )
+            return
+        }
+
+        val service = firebaseService ?: try {
+            FirebaseService(
+                getApplication(),
+                config
+            ).also {
+                firebaseService = it
+            }
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Firebase initialization failed: ${e.message}"
+            )
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            syncBusy = true,
+            syncMessage = "Signing in..."
+        )
+
+        service.signIn(email, password) { user, error ->
+
+            if (error != null || user == null) {
+                _uiState.value = _uiState.value.copy(
+                    syncBusy = false,
+                    syncMessage = "Sign-in failed: ${error?.message ?: "Unknown error"}"
+                )
+                return@signIn
+            }
+
+            repository.saveEmail(email.trim())
+
+            _uiState.value = _uiState.value.copy(
+                email = email.trim(),
+                firebaseUserEmail = user.email,
+                syncBusy = false,
+                syncMessage = "Signed in successfully."
+            )
+
+            if (_uiState.value.syncEnabled) {
+                synchronizeAndListen()
+            }
+        }
+    }
+
+    fun signOut() {
+        stopFirebaseListener()
+
+        debounceJob?.cancel()
+        debounceJob = null
+
+        firebaseService?.signOut()
+
+        repository.saveSyncEnabled(false)
+
+        _uiState.value = _uiState.value.copy(
+            firebaseUserEmail = null,
+            syncEnabled = false,
+            syncBusy = false,
+            syncMessage = "Signed out. Your list is saved locally."
         )
     }
 
@@ -84,11 +274,9 @@ class MercadoViewModel(
     // ---------------------------------------------------------
 
     fun addItem(item: MercadoItem) {
-        val now = System.currentTimeMillis()
-
         val newItem = item.copy(
             id = UUID.randomUUID().toString(),
-            modifiedAt = now
+            modifiedAt = System.currentTimeMillis()
         )
 
         updateList { current ->
@@ -105,9 +293,7 @@ class MercadoViewModel(
             current.copy(
                 items = current.items.map { item ->
                     if (item.id == updatedItem.id) {
-                        updatedItem.copy(
-                            modifiedAt = now
-                        )
+                        updatedItem.copy(modifiedAt = now)
                     } else {
                         item
                     }
@@ -121,9 +307,7 @@ class MercadoViewModel(
 
         updateList { current ->
             current.copy(
-                items = current.items.filterNot {
-                    it.id == id
-                },
+                items = current.items.filterNot { it.id == id },
                 deleted = current.deleted + (id to now)
             )
         }
@@ -160,9 +344,7 @@ class MercadoViewModel(
                     selectedIds.associateWith { now }
 
             current.copy(
-                items = current.items.filterNot {
-                    it.ok
-                },
+                items = current.items.filterNot { it.ok },
                 deleted = newDeleted
             )
         }
@@ -203,9 +385,7 @@ class MercadoViewModel(
 
         updateList { current ->
             val newDeleted = current.deleted +
-                    current.items.associate {
-                        it.id to now
-                    }
+                    current.items.associate { it.id to now }
 
             current.copy(
                 items = emptyList(),
@@ -232,212 +412,247 @@ class MercadoViewModel(
     }
 
     // ---------------------------------------------------------
-    // GitHub configuration
+    // Synchronization controls
     // ---------------------------------------------------------
-
-    fun saveCloudConfig(
-        repositoryUrl: String,
-        token: String,
-        branch: String,
-        filePath: String
-    ) {
-        val config = CloudConfig(
-            repositoryUrl = repositoryUrl.trim(),
-            token = token.trim(),
-            branch = branch.trim(),
-            filePath = filePath.trim().trim('/')
-        )
-
-        repository.saveCloudConfig(config)
-
-        _uiState.value = _uiState.value.copy(
-            cloudConfig = config,
-            syncMessage = "GitHub settings saved."
-        )
-
-        if (_uiState.value.syncEnabled) {
-            requestSync(force = true)
-        }
-    }
 
     fun setSyncEnabled(enabled: Boolean) {
-        repository.saveSyncEnabled(enabled)
-
-        _uiState.value = _uiState.value.copy(
-            syncEnabled = enabled,
-            syncMessage = if (enabled) {
-                "GitHub synchronization enabled."
-            } else {
-                "GitHub sync is disabled. Your list is saved locally."
+        if (enabled) {
+            if (firebaseService?.currentUser() == null) {
+                _uiState.value = _uiState.value.copy(
+                    syncEnabled = false,
+                    syncMessage = "Sign in before enabling synchronization."
+                )
+                return
             }
-        )
 
-        if (!enabled) {
-            retryJob?.cancel()
-            retryJob = null
+            repository.saveSyncEnabled(true)
+
+            _uiState.value = _uiState.value.copy(
+                syncEnabled = true,
+                syncMessage = "Starting Firebase synchronization..."
+            )
+
+            synchronizeAndListen()
+
         } else {
-            requestSync(force = true)
+            repository.saveSyncEnabled(false)
+
+            debounceJob?.cancel()
+            debounceJob = null
+
+            stopFirebaseListener()
+
+            _uiState.value = _uiState.value.copy(
+                syncEnabled = false,
+                syncBusy = false,
+                syncMessage = "Synchronization disabled. Your list is saved locally."
+            )
         }
     }
-
-    // ---------------------------------------------------------
-    // Synchronization
-    // ---------------------------------------------------------
 
     fun syncNow() {
-        requestSync(force = true)
-    }
-
-    fun onAppResumed() {
-        requestSync(checkResumeInterval = true)
-    }
-
-    private fun scheduleDebouncedSync() {
-        debounceJob?.cancel()
-
         if (!_uiState.value.syncEnabled) {
-            return
-        }
-
-        debounceJob = viewModelScope.launch {
-            delay(5000)
-            requestSync()
-        }
-    }
-
-    private fun requestSync(
-        force: Boolean = false,
-        checkResumeInterval: Boolean = false
-    ) {
-        val current = _uiState.value
-
-        if (!current.syncEnabled) {
-            return
-        }
-
-        val config = current.cloudConfig
-
-        if (
-            config.repositoryUrl.isBlank() ||
-            config.token.isBlank() ||
-            config.branch.isBlank() ||
-            config.filePath.isBlank()
-        ) {
-            _uiState.value = current.copy(
-                syncMessage = "Enter the GitHub repository URL, token, branch and file path."
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Enable synchronization first."
             )
             return
         }
 
-        val now = System.currentTimeMillis()
+        synchronize()
+    }
 
-        if (checkResumeInterval) {
-            if (lastSyncAttemptAt == 0L) {
-                return
-            }
+    fun onAppResumed() {
+        if (!_uiState.value.syncEnabled) return
 
-            if (now - lastSyncAttemptAt < 60_000L) {
-                return
-            }
+        if (firebaseListener == null) {
+            synchronizeAndListen()
+        } else {
+            synchronize()
         }
+    }
 
-        if (force) {
-            retryJob?.cancel()
-            retryJob = null
-            retryAttempt = 0
+    // ---------------------------------------------------------
+    // Firebase synchronization
+    // ---------------------------------------------------------
+
+    private fun scheduleDebouncedSync() {
+        debounceJob?.cancel()
+
+        if (!_uiState.value.syncEnabled) return
+        if (firebaseService?.currentUser() == null) return
+
+        debounceJob = viewModelScope.launch {
+            delay(3000)
+            synchronize()
         }
+    }
 
-        if (!syncMutex.tryLock()) {
+    private fun synchronizeAndListen() {
+        stopFirebaseListener()
+
+        synchronize {
+            attachFirebaseListener()
+        }
+    }
+
+    private fun synchronize(onSuccess: (() -> Unit)? = null) {
+
+        if (syncInProgress) {
             syncPending = true
+
+            if (onSuccess != null) {
+                pendingOnSuccess = onSuccess
+            }
+
             return
         }
 
-        viewModelScope.launch {
-            try {
+        val service = firebaseService
+
+        if (service == null || service.currentUser() == null) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Sign in to Firebase before synchronizing."
+            )
+            return
+        }
+
+        syncInProgress = true
+
+        val current = _uiState.value
+
+        val localSnapshot = SyncSnapshot(
+            items = current.items,
+            deleted = current.deleted
+        )
+
+        _uiState.value = current.copy(
+            syncBusy = true,
+            syncMessage = "Synchronizing with Firebase..."
+        )
+
+        service.synchronize(localSnapshot) { merged, error ->
+
+            syncInProgress = false
+
+            if (error != null || merged == null) {
                 _uiState.value = _uiState.value.copy(
-                    syncBusy = true,
-                    syncMessage = "Synchronizing with GitHub..."
+                    syncBusy = false,
+                    syncMessage = "Firebase sync failed: ${error?.message ?: "Unknown error"}. Your local list is still available."
                 )
 
-                syncPending = false
-                lastSyncAttemptAt = System.currentTimeMillis()
+            } else {
+                // Merge again with the latest local state.
+                // This protects edits made while the transaction was running.
 
-                val currentState = _uiState.value
+                val latestState = _uiState.value
 
-                val localSnapshot = SyncSnapshot(
-                    items = currentState.items,
-                    deleted = currentState.deleted
+                val latestLocalSnapshot = SyncSnapshot(
+                    items = latestState.items,
+                    deleted = latestState.deleted
                 )
 
-                try {
-                    val merged = repository.synchronize(
-                        localSnapshot = localSnapshot,
-                        config = currentState.cloudConfig
-                    )
+                val finalSnapshot = CloudSync.merge(
+                    latestLocalSnapshot,
+                    merged
+                )
 
-                    val newState = _uiState.value.copy(
-                        items = merged.items,
-                        deleted = merged.deleted,
-                        syncMessage = "GitHub synchronized successfully."
-                    )
+                _uiState.value = _uiState.value.copy(
+                    items = finalSnapshot.items,
+                    deleted = finalSnapshot.deleted,
+                    syncBusy = false,
+                    syncMessage = "Firebase synchronized successfully."
+                )
 
-                    _uiState.value = newState
+                repository.saveSnapshot(finalSnapshot)
 
-                    repository.saveSnapshot(merged)
+                onSuccess?.invoke()
 
-                    retryAttempt = 0
-                    retryJob?.cancel()
-                    retryJob = null
+                // If local edits occurred during the transaction,
+                // synchronize those edits in another transaction.
 
-                } catch (e: Exception) {
-                    _uiState.value = _uiState.value.copy(
-                        syncMessage =
-                            "GitHub sync failed: ${e.message ?: "Unknown error"}. " +
-                                    "Your local list is still available."
-                    )
-
-                    scheduleRetry()
+                if (finalSnapshot != merged) {
+                    syncPending = true
                 }
+            }
 
-            } finally {
-                _uiState.value = _uiState.value.copy(
-                    syncBusy = false
-                )
+            val pendingCallback = pendingOnSuccess
+            pendingOnSuccess = null
 
-                syncMutex.unlock()
+            if (pendingCallback != null && error == null) {
+                pendingCallback()
+            }
 
-                if (syncPending && _uiState.value.syncEnabled) {
-                    syncPending = false
-                    requestSync()
+            if (syncPending) {
+                syncPending = false
+
+                if (_uiState.value.syncEnabled) {
+                    synchronize()
                 }
             }
         }
     }
 
-    private fun scheduleRetry() {
-        val index = minOf(
-            retryAttempt,
-            retryDelays.lastIndex
-        )
+    private fun attachFirebaseListener() {
+        if (!_uiState.value.syncEnabled) return
+        if (firebaseService?.currentUser() == null) return
+        if (firebaseListener != null) return
 
-        val delaySeconds = retryDelays[index]
+        try {
+            firebaseListener = firebaseService?.observeSnapshot(
 
-        retryAttempt++
+                onChanged = { remoteSnapshot ->
 
-        retryJob?.cancel()
+                    val localSnapshot = SyncSnapshot(
+                        items = _uiState.value.items,
+                        deleted = _uiState.value.deleted
+                    )
 
-        retryJob = viewModelScope.launch {
-            delay(delaySeconds * 1000L)
+                    val merged = CloudSync.merge(
+                        localSnapshot,
+                        remoteSnapshot
+                    )
 
-            if (_uiState.value.syncEnabled) {
-                requestSync()
-            }
+                    _uiState.value = _uiState.value.copy(
+                        items = merged.items,
+                        deleted = merged.deleted,
+                        syncMessage = "List updated from Firebase."
+                    )
+
+                    repository.saveSnapshot(merged)
+
+                    // Upload only if local data contains newer changes.
+
+                    if (merged != remoteSnapshot) {
+                        scheduleDebouncedSync()
+                    }
+                },
+
+                onError = { error ->
+                    _uiState.value = _uiState.value.copy(
+                        syncMessage = "Firebase listener error: ${error.message}"
+                    )
+                }
+            )
+
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = "Could not start Firebase listener: ${e.message}"
+            )
+        }
+    }
+
+    private fun stopFirebaseListener() {
+        val listener = firebaseListener
+
+        if (listener != null) {
+            firebaseService?.removeListener(listener)
+            firebaseListener = null
         }
     }
 
     override fun onCleared() {
         debounceJob?.cancel()
-        retryJob?.cancel()
+        stopFirebaseListener()
         super.onCleared()
     }
 }

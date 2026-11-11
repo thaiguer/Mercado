@@ -51,8 +51,6 @@ fun MercadoApp(
         mutableStateOf(AppDestinations.HOME)
     }
 
-    // Synchronize when the app returns to the foreground.
-
     DisposableEffect(lifecycleOwner, mercadoViewModel) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -68,11 +66,8 @@ fun MercadoApp(
     }
 
     NavigationSuiteScaffold(
-
         navigationSuiteItems = {
-
             AppDestinations.entries.forEach { destination ->
-
                 item(
                     icon = {
                         Text(destination.icon)
@@ -87,13 +82,10 @@ fun MercadoApp(
                 )
             }
         }
-
     ) {
-
         when (currentDestination) {
 
             AppDestinations.HOME -> {
-
                 HomeScreen(
                     products = state.items,
 
@@ -112,9 +104,7 @@ fun MercadoApp(
             }
 
             AppDestinations.MANAGE -> {
-
                 ManageScreen(
-
                     items = state.items,
 
                     onClearSelected = {
@@ -137,31 +127,33 @@ fun MercadoApp(
                         mercadoViewModel.clearAll()
                     },
 
-                    // GitHub configuration
+                    // Firebase configuration
 
-                    repositoryUrl = state.cloudConfig.repositoryUrl,
+                    firebaseConfig = state.firebaseConfig,
 
-                    token = state.cloudConfig.token,
-
-                    branch = state.cloudConfig.branch,
-
-                    filePath = state.cloudConfig.filePath,
-
-                    onSaveCloudConfig = {
-                            url,
-                            token,
-                            branch,
-                            filePath ->
-
-                        mercadoViewModel.saveCloudConfig(
-                            repositoryUrl = url,
-                            token = token,
-                            branch = branch,
-                            filePath = filePath
-                        )
+                    onSaveFirebaseConfig = { config ->
+                        mercadoViewModel.saveFirebaseConfig(config)
                     },
 
-                    // Synchronization controls
+                    // Firebase authentication
+
+                    email = state.email,
+
+                    onEmailChange = { email ->
+                        mercadoViewModel.updateEmail(email)
+                    },
+
+                    firebaseUserEmail = state.firebaseUserEmail,
+
+                    onSignIn = { email, password ->
+                        mercadoViewModel.signIn(email, password)
+                    },
+
+                    onSignOut = {
+                        mercadoViewModel.signOut()
+                    },
+
+                    // Synchronization
 
                     syncEnabled = state.syncEnabled,
 
